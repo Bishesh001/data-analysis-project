@@ -1,20 +1,10 @@
-# Cleaning and transformation 
-
 import pandas as pd
 
 from extract import load_all
 
-# Two product categories used in products.csv are missing from the translation file.
-# Their English names are literal translations of the Portuguese names.
-EXTRA_TRANSLATIONS = {
-    "pc_gamer": "pc_gamer",
-    "portateis_cozinha_e_preparadores_de_alimentos": "portable_kitchen_and_food_preparers",
-}
-
 
 def pad_zip(series):
-    """Zip prefixes were read as numbers, so '01037' became 1037. Restore 5 characters."""
-    return series.astype(str).str.zfill(5)
+    return series.astype("string").str.extract(r"(\d+)", expand=False).str.zfill(5)
 
 
 def clean_city(series):
@@ -49,7 +39,7 @@ def clean_orders(raw):
         "order_delivered_customer_date", "order_estimated_delivery_date",
     ]
     for column in date_columns:
-        df[column] = pd.to_datetime(df[column])  # raises an error if a value cannot be parsed
+        df[column] = pd.to_datetime(df[column], errors="coerce")
 
     df["purchase_year_month"] = df["order_purchase_timestamp"].dt.strftime("%Y-%m")
 
@@ -88,7 +78,7 @@ def clean_reviews(raw):
         df[column] = pd.to_datetime(df[column])
     # Comments that contain only spaces are empty comments.
     for column in ["review_comment_title", "review_comment_message"]:
-        df[column] = df[column].mask(df[column].str.strip() == "")
+        df[column] = df[column].mask(df[column].astype("string").str.strip() == "")
     return df
 
 
@@ -102,17 +92,24 @@ def clean_products(raw):
     return df
 
 
-def clean_categories(raw):
-    extra = pd.DataFrame(
-        {"product_category_name": list(EXTRA_TRANSLATIONS),
-         "product_category_name_english": list(EXTRA_TRANSLATIONS.values())}
-    )
-    return pd.concat([raw, extra], ignore_index=True)
+def clean_categories(raw, products=None):
+    df = raw.drop_duplicates("product_category_name").copy()
+    if products is not None:
+        used_categories = set(products["product_category_name"].dropna())
+        missing = sorted(used_categories - set(df["product_category_name"]))
+        if missing:
+            extra = pd.DataFrame({
+                "product_category_name": missing,
+                "product_category_name_english": missing,
+            })
+            df = pd.concat([df, extra], ignore_index=True)
+    return df
 
 
 def build_zip_locations(raw_geolocation):
     """One row per zip prefix instead of up to 1,146 repeated coordinates."""
-    geo = raw_geolocation
+    geo = raw_geolocation.copy()
+    geo["geolocation_zip_code_prefix"] = pad_zip(geo["geolocation_zip_code_prefix"])
     # Rough bounding box of Brazil. Points outside it are wrong coordinates.
     in_brazil = geo["geolocation_lat"].between(-34, 5.3) & geo["geolocation_lng"].between(-74, -34)
     geo = geo[in_brazil]
@@ -135,15 +132,41 @@ def clean_all(raw):
         "payments": clean_payments(raw["payments"]),
         "reviews": clean_reviews(raw["reviews"]),
         "products": clean_products(raw["products"]),
-        "product_categories": clean_categories(raw["category_translation"]),
+        "product_categories": clean_categories(raw["category_translation"], raw["products"]),
         "zip_locations": build_zip_locations(raw["geolocation"]),
     }
+
+
+def validation_summary(raw, cleaned):
+    checks = {
+        "customers": ["customer_id"],
+        "orders": ["order_id"],
+        "order_items": ["order_id", "order_item_id"],
+        "payments": ["order_id", "payment_sequential"],
+        "reviews": ["review_id", "order_id"],
+        "products": ["product_id"],
+        "sellers": ["seller_id"],
+        "product_categories": ["product_category_name"],
+        "zip_locations": ["zip_code_prefix"],
+    }
+    raw_names = {"product_categories": "category_translation", "zip_locations": "geolocation"}
+    lines = []
+    for name, df in cleaned.items():
+        before = len(raw[raw_names.get(name, name)])
+        missing = df.isna().sum()
+        missing = missing[missing > 0].sort_values(ascending=False).head(4)
+        missing_text = ", ".join(f"{col}={count}" for col, count in missing.items()) or "none"
+        key_cols = checks.get(name, [])
+        duplicate_keys = df.duplicated(key_cols).sum() if key_cols else 0
+        lines.append(
+            f"{name:20s} raw={before:>9,} clean={len(df):>9,} "
+            f"cols={df.shape[1]:>2} duplicate_keys={duplicate_keys:>5,} missing: {missing_text}"
+        )
+    return lines
 
 
 if __name__ == "__main__":
     raw_tables = load_all()
     cleaned = clean_all(raw_tables)
-    raw_names = {"product_categories": "category_translation", "zip_locations": "geolocation"}
-    for name, df in cleaned.items():
-        before = len(raw_tables[raw_names.get(name, name)])
-        print(f"{name:20s} raw rows {before:>9,} -> clean rows {len(df):>9,}")
+    for line in validation_summary(raw_tables, cleaned):
+        print(line)

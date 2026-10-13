@@ -1,8 +1,7 @@
-# Loading the nine Olist CSV files into pandas DataFrames
 from pathlib import Path
 import pandas as pd
 
-PROJECT_DIR = Path(r"C:\Users\NIC\Desktop\Project- data analysis\archive (5)")
+DEFAULT_DATA_DIR = Path(__file__).resolve().parent / "archive (5)"
 
 RAW_FILES = {
     "customers": "olist_customers_dataset.csv",
@@ -17,22 +16,40 @@ RAW_FILES = {
 }
 
 
-def find_data_dir():
-    candidates = [PROJECT_DIR, Path.cwd(), Path.cwd() / "data" / "raw"]
+ZIP_COLUMNS = {
+    "customers": {"customer_zip_code_prefix": "string"},
+    "sellers": {"seller_zip_code_prefix": "string"},
+    "geolocation": {"geolocation_zip_code_prefix": "string"},
+}
+
+
+def find_data_dir(data_dir=None):
+    if data_dir is not None:
+        folder = Path(data_dir)
+        missing = [filename for filename in RAW_FILES.values() if not (folder / filename).exists()]
+        if missing:
+            raise FileNotFoundError(f"Missing CSV files in {folder}: {missing}")
+        return folder
+
+    candidates = [DEFAULT_DATA_DIR, Path.cwd(), Path.cwd() / "archive (5)", Path.cwd() / "data" / "raw"]
     for folder in candidates:
         if all((folder / filename).exists() for filename in RAW_FILES.values()):
             return folder
     raise FileNotFoundError(
-        "Could not find all nine Olist CSV files. Put them in PROJECT_DIR or the current folder: "
-        + str(PROJECT_DIR)
+        "Could not find all nine Olist CSV files. Expected them in "
+        f"{DEFAULT_DATA_DIR} or pass a folder to load_all(data_dir)."
     )
 
 
-def load_all():
-    data_dir = find_data_dir()
+def load_all(data_dir=None):
+    data_dir = find_data_dir(data_dir)
     tables = {}
     for name, filename in RAW_FILES.items():
-        tables[name] = pd.read_csv(data_dir / filename, low_memory=False)
+        tables[name] = pd.read_csv(
+            data_dir / filename,
+            dtype=ZIP_COLUMNS.get(name),
+            low_memory=False,
+        )
     return tables
 
 
